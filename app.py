@@ -33,8 +33,8 @@ bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 # ===================== UTILS =====================
 def extract_otp(text: str):
-    match = re.search(r"\b(\d{4,8})\b", text)
-    return match.group(1) if match else None
+    m = re.search(r"\b(\d{4,8})\b", text)
+    return m.group(1) if m else None
 
 def load_cache():
     if os.path.exists(STATE_FILE):
@@ -61,9 +61,9 @@ def format_otp_message(raw_sms: str):
         "⚠️ *Do not share this OTP with anyone*"
     )
 
-# ===================== LOGIN (CLOUDFLARE SAFE) =====================
+# ===================== LOGIN (SCREENSHOT-BASED FIX) =====================
 async def login_and_get_cookies():
-    print("🔐 Launching Chrome (Fix-3 applied)...")
+    print("🔐 Launching Chrome (IVASMS Login)...")
 
     browser = await launch(
         headless=True,
@@ -74,24 +74,50 @@ async def login_and_get_cookies():
             "--disable-gpu",
             "--single-process",
             "--no-zygote",
-            "--no-first-run",
-            "--disable-extensions",
         ],
     )
 
     page = await browser.newPage()
-    await page.goto(LOGIN_URL, {"waitUntil": "networkidle2"})
+    page.setDefaultTimeout(120000)
 
-    await page.type('input[name="email"]', IVASMS_EMAIL, {"delay": 40})
-    await page.type('input[name="password"]', IVASMS_PASSWORD, {"delay": 40})
+    await page.goto(LOGIN_URL, {"waitUntil": "domcontentloaded"})
+    await asyncio.sleep(5)
+
+    # Email selectors based on real page
+    email_selectors = [
+        'input[type="email"]',
+        'input[type="text"]',
+        'input[placeholder*="Email"]',
+    ]
+
+    email_selector = None
+    for sel in email_selectors:
+        try:
+            await page.waitForSelector(sel, {"timeout": 10000})
+            email_selector = sel
+            break
+        except:
+            pass
+
+    if not email_selector:
+        await page.screenshot({"path": "email_not_found.png"})
+        await browser.close()
+        raise RuntimeError("❌ Email input not found on IVASMS login page")
+
+    await page.waitForSelector('input[type="password"]')
+
+    # Type credentials
+    await page.type(email_selector, IVASMS_EMAIL, {"delay": 60})
+    await page.type('input[type="password"]', IVASMS_PASSWORD, {"delay": 60})
+
+    # Submit login
     await page.click('button[type="submit"]')
-
     await page.waitForNavigation({"waitUntil": "networkidle2"})
 
     cookies = await page.cookies()
     await browser.close()
 
-    print("✅ Login successful, cookies saved")
+    print("✅ IVASMS Login Successful")
     return cookies
 
 # ===================== FETCH SMS =====================
