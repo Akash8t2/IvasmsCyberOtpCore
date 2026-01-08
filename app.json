@@ -1,13 +1,32 @@
 {
-  "name": "IVASMS OTP BOT",
+  "name": "IVASMS Telegram OTP Bot",
+  "description": "Telegram group OTP bot using Pyppeteer (Cloudflare safe)",
+  "stack": "heroku-22",
   "env": {
-    "IVASMS_EMAIL": {"required": true},
-    "IVASMS_PASSWORD": {"required": true},
-    "TELEGRAM_BOT_TOKEN": {"required": true},
-    "TELEGRAM_CHAT_IDS": {"required": true}
+    "IVASMS_EMAIL": {
+      "description": "IVASMS login email",
+      "required": true
+    },
+    "IVASMS_PASSWORD": {
+      "description": "IVASMS login password",
+      "required": true
+    },
+    "TELEGRAM_BOT_TOKEN": {
+      "description": "Telegram Bot Token",
+      "required": true
+    },
+    "TELEGRAM_CHAT_IDS": {
+      "description": "Telegram Group IDs as JSON array",
+      "required": true,
+      "value": "[\"-1001234567890\"]"
+    }
   },
   "buildpacks": [
-    {"url": "heroku/python"},
-    {"url": "https://github.com/heroku/heroku-buildpack-google-chrome"}
+    {
+      "url": "heroku/python"
+    },
+    {
+      "url": "https://github.com/heroku/heroku-buildpack-google-chrome"
+    }
   ]
 }
