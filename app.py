@@ -2,7 +2,6 @@ import asyncio
 import os
 import re
 import json
-import time
 from datetime import datetime, timedelta
 
 import httpx
@@ -24,19 +23,25 @@ SMS_ENDPOINT = "/portal/sms/received/getsms"
 CHECK_INTERVAL = 5
 STATE_FILE = "sent_cache.json"
 
-if not all([IVASMS_EMAIL, IVASMS_PASSWORD, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS]):
-    raise RuntimeError("❌ Missing environment variables")
+if not IVASMS_EMAIL or not IVASMS_PASSWORD:
+    raise RuntimeError("❌ IVASMS_EMAIL / IVASMS_PASSWORD missing")
+
+if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_IDS:
+    raise RuntimeError("❌ Telegram config missing")
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 # ===================== UTILS =====================
-def extract_otp(text):
-    m = re.search(r"\b(\d{4,8})\b", text)
-    return m.group(1) if m else None
+def extract_otp(text: str):
+    match = re.search(r"\b(\d{4,8})\b", text)
+    return match.group(1) if match else None
 
 def load_cache():
     if os.path.exists(STATE_FILE):
-        return set(json.load(open(STATE_FILE)))
+        try:
+            return set(json.load(open(STATE_FILE)))
+        except Exception:
+            return set()
     return set()
 
 def save_cache(data):
@@ -44,7 +49,7 @@ def save_cache(data):
         json.dump(list(data), f)
 
 # ===================== OTP MESSAGE =====================
-def format_otp_message(raw_sms):
+def format_otp_message(raw_sms: str):
     otp = extract_otp(raw_sms)
 
     return (
@@ -58,7 +63,7 @@ def format_otp_message(raw_sms):
 
 # ===================== LOGIN (CLOUDFLARE SAFE) =====================
 async def login_and_get_cookies():
-    print("🔐 Logging in via Pyppeteer...")
+    print("🔐 Launching Chrome (Fix-3 applied)...")
 
     browser = await launch(
         headless=True,
@@ -67,6 +72,10 @@ async def login_and_get_cookies():
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
+            "--single-process",
+            "--no-zygote",
+            "--no-first-run",
+            "--disable-extensions",
         ],
     )
 
@@ -82,7 +91,7 @@ async def login_and_get_cookies():
     cookies = await page.cookies()
     await browser.close()
 
-    print("✅ Login success")
+    print("✅ Login successful, cookies saved")
     return cookies
 
 # ===================== FETCH SMS =====================
@@ -92,11 +101,12 @@ async def fetch_sms(cookies):
         jar.set(c["name"], c["value"], domain=c["domain"])
 
     async with httpx.AsyncClient(cookies=jar, timeout=30) as client:
-        dash = await client.get(BASE_URL)
-        soup = BeautifulSoup(dash.text, "html.parser")
+        dashboard = await client.get(BASE_URL)
+        soup = BeautifulSoup(dashboard.text, "html.parser")
 
         csrf_meta = soup.find("meta", {"name": "csrf-token"})
         if not csrf_meta:
+            print("⚠️ CSRF token not found")
             return []
 
         csrf = csrf_meta["content"]
@@ -107,13 +117,13 @@ async def fetch_sms(cookies):
             "_token": csrf,
         }
 
-        r = await client.post(
+        response = await client.post(
             BASE_URL + SMS_ENDPOINT,
             data=payload,
             headers={"X-CSRF-TOKEN": csrf},
         )
 
-        soup = BeautifulSoup(r.text, "html.parser")
+        soup = BeautifulSoup(response.text, "html.parser")
         messages = []
 
         for card in soup.find_all("div", class_="card-body"):
@@ -139,7 +149,7 @@ async def main():
     sent_cache = load_cache()
     cookies = await login_and_get_cookies()
 
-    print("🚀 OTP BOT RUNNING (GROUP MODE)")
+    print("🚀 OTP BOT RUNNING (HEROKU + GROUP MODE)")
 
     while True:
         try:
@@ -153,7 +163,7 @@ async def main():
                     print("📩 OTP sent to Telegram group")
 
         except Exception as e:
-            print("❌ Error:", e)
+            print("❌ Runtime error:", e)
 
         await asyncio.sleep(CHECK_INTERVAL)
 
