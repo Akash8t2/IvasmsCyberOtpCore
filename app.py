@@ -23,6 +23,9 @@ SMS_ENDPOINT = "/portal/sms/received/getsms"
 CHECK_INTERVAL = 5
 STATE_FILE = "sent_cache.json"
 
+# IMPORTANT: chrome-for-testing binary path on Heroku
+CHROME_PATH = "/app/.chrome-for-testing/chrome-linux64/chrome"
+
 if not IVASMS_EMAIL or not IVASMS_PASSWORD:
     raise RuntimeError("❌ IVASMS_EMAIL / IVASMS_PASSWORD missing")
 
@@ -51,7 +54,6 @@ def save_cache(data):
 # ===================== OTP MESSAGE =====================
 def format_otp_message(raw_sms: str):
     otp = extract_otp(raw_sms)
-
     return (
         "🔐 *NEW OTP RECEIVED*\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
@@ -61,12 +63,13 @@ def format_otp_message(raw_sms: str):
         "⚠️ *Do not share this OTP with anyone*"
     )
 
-# ===================== LOGIN (SCREENSHOT-BASED FIX) =====================
+# ===================== LOGIN (FIXED SELECTORS + SYSTEM CHROME) =====================
 async def login_and_get_cookies():
-    print("🔐 Launching Chrome (IVASMS Login)...")
+    print("🔐 Launching Chrome (system chrome-for-testing)...")
 
     browser = await launch(
         headless=True,
+        executablePath=CHROME_PATH,   # <<< CRITICAL FIX
         args=[
             "--no-sandbox",
             "--disable-setuid-sandbox",
@@ -79,11 +82,12 @@ async def login_and_get_cookies():
 
     page = await browser.newPage()
     page.setDefaultTimeout(120000)
+    page.setDefaultNavigationTimeout(120000)
 
     await page.goto(LOGIN_URL, {"waitUntil": "domcontentloaded"})
     await asyncio.sleep(5)
 
-    # Email selectors based on real page
+    # Try multiple selectors (page structure safe)
     email_selectors = [
         'input[type="email"]',
         'input[type="text"]',
@@ -96,22 +100,25 @@ async def login_and_get_cookies():
             await page.waitForSelector(sel, {"timeout": 10000})
             email_selector = sel
             break
-        except:
+        except Exception:
             pass
 
     if not email_selector:
         await page.screenshot({"path": "email_not_found.png"})
         await browser.close()
-        raise RuntimeError("❌ Email input not found on IVASMS login page")
+        raise RuntimeError("❌ Email input not found on login page")
 
     await page.waitForSelector('input[type="password"]')
 
-    # Type credentials
     await page.type(email_selector, IVASMS_EMAIL, {"delay": 60})
     await page.type('input[type="password"]', IVASMS_PASSWORD, {"delay": 60})
 
-    # Submit login
-    await page.click('button[type="submit"]')
+    # Submit
+    try:
+        await page.click('button[type="submit"]')
+    except Exception:
+        await page.keyboard.press("Enter")
+
     await page.waitForNavigation({"waitUntil": "networkidle2"})
 
     cookies = await page.cookies()
@@ -143,51 +150,42 @@ async def fetch_sms(cookies):
             "_token": csrf,
         }
 
-        response = await client.post(
+        r = await client.post(
             BASE_URL + SMS_ENDPOINT,
             data=payload,
             headers={"X-CSRF-TOKEN": csrf},
         )
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(r.text, "html.parser")
         messages = []
-
         for card in soup.find_all("div", class_="card-body"):
             text = card.get_text(" ", strip=True)
             if extract_otp(text):
                 messages.append(text)
-
         return messages
 
 # ===================== SEND TO TELEGRAM GROUP =====================
 async def send_to_telegram(raw_sms):
     message = format_otp_message(raw_sms)
-
     for chat_id in TELEGRAM_CHAT_IDS:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=message,
-            parse_mode="Markdown",
-        )
+        await bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
 
 # ===================== MAIN LOOP =====================
 async def main():
     sent_cache = load_cache()
     cookies = await login_and_get_cookies()
 
-    print("🚀 OTP BOT RUNNING (HEROKU + GROUP MODE)")
+    print("🚀 OTP BOT RUNNING (HEROKU-24 + GROUP MODE)")
 
     while True:
         try:
             messages = await fetch_sms(cookies)
-
             for msg in messages:
                 if msg not in sent_cache:
                     await send_to_telegram(msg)
                     sent_cache.add(msg)
                     save_cache(sent_cache)
                     print("📩 OTP sent to Telegram group")
-
         except Exception as e:
             print("❌ Runtime error:", e)
 
