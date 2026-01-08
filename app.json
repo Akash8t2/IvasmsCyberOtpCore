@@ -1,0 +1,13 @@
+{
+  "name": "IVASMS OTP BOT",
+  "env": {
+    "IVASMS_EMAIL": {"required": true},
+    "IVASMS_PASSWORD": {"required": true},
+    "TELEGRAM_BOT_TOKEN": {"required": true},
+    "TELEGRAM_CHAT_IDS": {"required": true}
+  },
+  "buildpacks": [
+    {"url": "heroku/python"},
+    {"url": "https://github.com/heroku/heroku-buildpack-google-chrome"}
+  ]
+}
