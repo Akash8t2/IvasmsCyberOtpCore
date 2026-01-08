@@ -36,7 +36,7 @@ def load_cache():
     if os.path.exists(STATE_FILE):
         try:
             return set(json.load(open(STATE_FILE)))
-        except Exception:
+        except:
             return set()
     return set()
 
@@ -56,73 +56,108 @@ def format_otp_message(raw_sms):
         "⚠️ *Do not share this OTP with anyone*"
     )
 
-# ===================== LOGIN =====================
-async def login_and_get_cookies():
-    print("🔐 Launching Chrome (system chrome-for-testing)...")
+# ===================== CLOUDFLARE SAFE LOGIN =====================
+async def login_and_get_cookies(max_retry=3):
+    print("🔐 Launching Chrome (Cloudflare-tolerant mode)...")
 
-    browser = await launch(
-        headless=True,
-        executablePath=CHROME_PATH,
-        args=[
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--single-process",
-            "--no-zygote",
-        ],
-    )
+    for attempt in range(1, max_retry + 1):
+        print(f"🔄 Login attempt {attempt}/{max_retry}")
 
-    page = await browser.newPage()
+        browser = await launch(
+            headless=True,
+            executablePath=CHROME_PATH,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--single-process",
+                "--no-zygote",
+            ],
+        )
 
-    await page.goto(LOGIN_URL, {"waitUntil": "domcontentloaded"})
-    await asyncio.sleep(5)
+        page = await browser.newPage()
 
-    # Find email field safely
-    email_selector = None
-    for sel in [
-        'input[type="email"]',
-        'input[name="email"]',
-        'input[type="text"]',
-    ]:
         try:
-            await page.waitForSelector(sel, {"timeout": 15000})
-            email_selector = sel
-            break
-        except Exception:
-            pass
+            await page.goto(LOGIN_URL, {"waitUntil": "domcontentloaded"})
+            await asyncio.sleep(12)  # Cloudflare wait
 
-    if not email_selector:
+            email_input = None
+            password_input = None
+            active_context = page
+
+            # 1️⃣ main page
+            email_input = await page.querySelector(
+                'input[type="email"], input[name="email"], input[type="text"]'
+            )
+            password_input = await page.querySelector('input[type="password"]')
+
+            # 2️⃣ iframe scan
+            if not email_input:
+                for frame in page.frames:
+                    try:
+                        email_input = await frame.querySelector(
+                            'input[type="email"], input[name="email"], input[type="text"]'
+                        )
+                        password_input = await frame.querySelector('input[type="password"]')
+                        if email_input and password_input:
+                            active_context = frame
+                            break
+                    except:
+                        continue
+
+            # 3️⃣ still not found → Cloudflare
+            if not email_input or not password_input:
+                await page.screenshot({"path": f"cloudflare_block_{attempt}.png"})
+                print("⚠️ Login form not found (Cloudflare challenge)")
+                await browser.close()
+                await asyncio.sleep(10)
+                continue
+
+            # 4️⃣ type credentials
+            await email_input.type(IVASMS_EMAIL, {"delay": 80})
+            await password_input.type(IVASMS_PASSWORD, {"delay": 80})
+
+            # submit
+            try:
+                btn = await active_context.querySelector('button[type="submit"]')
+                if btn:
+                    await btn.click()
+                else:
+                    await page.keyboard.press("Enter")
+            except:
+                await page.keyboard.press("Enter")
+
+            await asyncio.sleep(10)
+
+            cookies = await page.cookies()
+            await browser.close()
+
+            if cookies:
+                print("✅ Login cookies captured")
+                return cookies
+
+        except Exception as e:
+            print("❌ Login error:", e)
+
         await browser.close()
-        raise RuntimeError("❌ Email input not found")
+        await asyncio.sleep(10)
 
-    await page.waitForSelector('input[type="password"]', {"timeout": 15000})
-
-    await page.type(email_selector, IVASMS_EMAIL, {"delay": 60})
-    await page.type('input[type="password"]', IVASMS_PASSWORD, {"delay": 60})
-
-    try:
-        await page.click('button[type="submit"]')
-    except Exception:
-        await page.keyboard.press("Enter")
-
-    await page.waitForNavigation({"waitUntil": "networkidle2", "timeout": 60000})
-
-    cookies = await page.cookies()
-    await browser.close()
-
-    print("✅ IVASMS Login Successful")
-    return cookies
+    print("🚫 Login failed after retries (Cloudflare block)")
+    return None
 
 # ===================== FETCH SMS =====================
 async def fetch_sms(cookies):
+    if not cookies:
+        return []
+
     jar = httpx.Cookies()
     for c in cookies:
         jar.set(c["name"], c["value"], domain=c["domain"])
 
     async with httpx.AsyncClient(cookies=jar, timeout=30) as client:
-        dashboard = await client.get(BASE_URL)
-        soup = BeautifulSoup(dashboard.text, "html.parser")
+        dash = await client.get(BASE_URL)
+        soup = BeautifulSoup(dash.text, "html.parser")
 
         csrf_meta = soup.find("meta", {"name": "csrf-token"})
         if not csrf_meta:
@@ -143,13 +178,14 @@ async def fetch_sms(cookies):
         )
 
         soup = BeautifulSoup(r.text, "html.parser")
-        messages = []
+        msgs = []
+
         for card in soup.find_all("div", class_="card-body"):
             text = card.get_text(" ", strip=True)
             if extract_otp(text):
-                messages.append(text)
+                msgs.append(text)
 
-        return messages
+        return msgs
 
 # ===================== TELEGRAM =====================
 async def send_to_telegram(raw_sms):
@@ -160,7 +196,12 @@ async def send_to_telegram(raw_sms):
 # ===================== MAIN LOOP =====================
 async def main():
     sent_cache = load_cache()
+
     cookies = await login_and_get_cookies()
+    if not cookies:
+        print("🚫 Cannot login due to Cloudflare. Sleeping.")
+        while True:
+            await asyncio.sleep(60)
 
     print("🚀 OTP BOT RUNNING (STABLE MODE)")
 
